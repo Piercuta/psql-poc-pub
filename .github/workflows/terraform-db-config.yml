@@ -1,0 +1,88 @@
+name: Terraform db-config
+
+# Runs Terraform (PostgreSQL provider) on a CodeBuild-hosted runner inside the VPC,
+# because the Aurora cluster is only reachable from its isolated subnets.
+#   - pull request: terraform plan
+#   - push on main: terraform plan, then apply after manual approval (environment "dev")
+
+on:
+  pull_request:
+    paths:
+      - "terraform/stacks/03-db-config/**"
+      - ".github/workflows/terraform-db-config.yml"
+  push:
+    branches: [main]
+    paths:
+      - "terraform/stacks/03-db-config/**"
+      - ".github/workflows/terraform-db-config.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terraform-db-config-dev
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: eu-west-1
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  TF_WORKDIR: terraform/stacks/03-db-config
+
+jobs:
+  plan:
+    name: Plan
+    runs-on:
+      - codebuild-psql-poc-dev-runner-${{ github.run_id }}-${{ github.run_attempt }}
+      - plan
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.14"
+          terraform_wrapper: false
+
+      - name: Format check
+        run: terraform fmt -check -recursive
+        working-directory: terraform
+
+      - name: Init
+        run: terraform init
+        working-directory: ${{ env.TF_WORKDIR }}
+
+      - name: Validate
+        run: terraform validate
+        working-directory: ${{ env.TF_WORKDIR }}
+
+      - name: Plan
+        run: terraform plan -lock-timeout=5m
+        working-directory: ${{ env.TF_WORKDIR }}
+
+  apply:
+    name: Apply
+    needs: plan
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    # Configure required reviewers on the "dev" environment in GitHub settings.
+    environment: dev
+    runs-on:
+      - codebuild-psql-poc-dev-runner-${{ github.run_id }}-${{ github.run_attempt }}
+      - apply
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.14"
+          terraform_wrapper: false
+
+      - name: Init
+        run: terraform init
+        working-directory: ${{ env.TF_WORKDIR }}
+
+      # A saved plan is not used on purpose: it would contain the generated
+      # passwords and have to travel through an artifact.
+      - name: Apply
+        run: terraform apply -auto-approve -lock-timeout=5m
+        working-directory: ${{ env.TF_WORKDIR }}
