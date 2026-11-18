@@ -1,23 +1,35 @@
 # Desired content of the PostgreSQL server, applied by Terraform (02-db-config stack).
-# Everything is created if missing, together with its schemas and extensions.
-# Removing an entry removes the matching grants/roles/schemas.
+#
+# Schema / database lifecycle (app repo owns only this file in production):
+#   status: active  — managed (grants, ownership)
+#   status: retired — kept in the cluster, grants removed, prevent_destroy still on
+# Destroying a retired object is done only by the destroy-schema workflow
+# (archive to S3, then drop). Do not delete the YAML entry on the normal pipeline.
 
 configuration:
   databases:
     # Online shop application
     shop:
+      status: active
       schemas:
-        - catalog # products, prices, stock
-        - orders # carts, orders, payments
+        - name: catalog
+          status: active # products, prices, stock
+        - name: orders
+          status: active # carts, orders, payments
       extensions:
         - pg_trgm # fuzzy product search
         - pgcrypto
 
     # Data platform: ingestion, transformation and BI reporting
     analytics:
+      status: active
       schemas:
-        - staging # cleaned and joined data
-        - reporting # tables and views consumed by BI dashboards
+        - name: raw
+          status: retired # example: waiting for destroy-schema workflow
+        - name: staging
+          status: active # cleaned and joined data
+        - name: reporting
+          status: active # tables and views consumed by BI dashboards
       extensions:
         - tablefunc # crosstab / pivot queries
         - pgcrypto
@@ -34,8 +46,9 @@ configuration:
     - { username: bi_reader, authentication: password } # BI dashboards
     - { username: support_readonly, authentication: password } # customer support tooling
 
-  # Access rights. Without "schema", the mapping applies to every schema of the database.
+  # Access rights. Without "schema", the mapping applies to every *active* schema.
   # A mapping with a "schema" overrides a mapping without one for the schema ownership.
+  # Mappings must not reference retired schemas.
   mappings:
     # Ownership
     - { level: owner, username: shop_owner, database: shop }
@@ -49,7 +62,7 @@ configuration:
     # Customer support: read-only on the whole shop
     - { level: reader, username: support_readonly, database: shop }
 
-    # ETL: extracts from the shop, loads raw and staging
+    # ETL: extracts from the shop, loads staging (raw is retired — no mapping)
     - { level: reader, username: etl_worker, database: shop }
     - { level: writer, username: etl_worker, database: analytics, schema: staging }
 

@@ -4,6 +4,8 @@
 locals {
   config = yamldecode(file("${path.module}/config.yaml")).configuration
 
+  allowed_statuses = toset(["active", "retired"])
+
   # Privileges of each level, defined once here. "owner" is not a grant: the login
   # owns the schema.
   levels = {
@@ -17,9 +19,16 @@ locals {
     }
   }
 
+  # Schemas accept either a plain string ("catalog") or {name, status}.
   databases = {
     for db, cfg in local.config.databases : db => {
-      schemas    = tolist(cfg.schemas)
+      status = try(cfg.status, "active")
+      schemas = [
+        for s in cfg.schemas : {
+          name   = try(s.name, s)
+          status = try(s.status, "active")
+        }
+      ]
       extensions = tolist(try(cfg.extensions, []))
     }
   }
@@ -39,12 +48,24 @@ locals {
     }
   ]
 
+  # All schemas stay in state while listed (active or retired).
   schemas = {
     for item in flatten([
       for db, cfg in local.databases : [
-        for s in cfg.schemas : { key = "${db}/${s}", database = db, schema = s }
+        for s in cfg.schemas : {
+          key      = "${db}/${s.name}"
+          database = db
+          schema   = s.name
+          status   = s.status
+        }
       ]
     ]) : item.key => item
+  }
+
+  active_schema_names = {
+    for db, cfg in local.databases : db => [
+      for s in cfg.schemas : s.name if s.status == "active"
+    ]
   }
 
   extensions = {
@@ -56,8 +77,6 @@ locals {
   }
 
   # --- Schema ownership -------------------------------------------------------
-  # Owner mappings grouped by schema (specific) and by database (every schema).
-  # Values are lists so that duplicates can be detected by the checks below.
   owners_by_schema = {
     for m in local.mappings : "${m.database}/${m.schema}" => m.username...
     if m.level == "owner" && m.schema != null
@@ -69,7 +88,6 @@ locals {
   }
 
   # Effective owner of each schema: the schema mapping wins over the database mapping.
-  # null means the schema stays owned by the master user.
   schema_owner = {
     for k, s in local.schemas : k => try(
       local.owners_by_schema[k][0],
@@ -77,13 +95,16 @@ locals {
     )
   }
 
-  # Logins that own at least one schema.
   owner_logins = toset(compact([for k, o in local.schema_owner : o]))
 
-  # --- Access (reader / writer / owner) per login, database and schema ---------
+  # Grants only on *active* schemas. Database-wide mappings expand to active schemas only.
   expanded_mappings = flatten([
     for m in local.mappings : [
-      for s in(m.schema != null ? tolist([m.schema]) : try(local.databases[m.database].schemas, [])) : {
+      for s in(
+        m.schema != null
+        ? tolist([m.schema])
+        : try(local.active_schema_names[m.database], [])
+        ) : {
         username = m.username
         database = m.database
         schema   = s
@@ -96,7 +117,6 @@ locals {
     for e in local.expanded_mappings : "${e.username}/${e.database}/${e.schema}" => e...
   }
 
-  # When several mappings target the same login and schema, the highest level wins.
   access = {
     for k, items in local.access_grouped : k => {
       username = items[0].username
@@ -109,13 +129,11 @@ locals {
     }
   }
 
-  # Reader and writer grants. A login that owns the schema needs no grant, and a
-  # database-wide owner whose schema is owned by someone else gets no rights on it.
   access_grants = {
-    for k, a in local.access : k => a if a.level != "owner"
+    for k, a in local.access : k => a
+    if a.level != "owner" && try(local.schemas["${a.database}/${a.schema}"].status, "active") == "active"
   }
 
-  # Every (login, database) pair that needs CONNECT.
   connect_grants = {
     for pair in distinct([for a in values(local.access) : "${a.username}/${a.database}"]) : pair => {
       username = split("/", pair)[0]
@@ -124,13 +142,21 @@ locals {
   }
 }
 
-# Configuration checks. Other resources depend on it so that nothing is created when
-# config.yaml is invalid.
 resource "terraform_data" "validate_config" {
   lifecycle {
     precondition {
       condition     = alltrue([for l in local.logins : l.authentication == "password"])
       error_message = "Only authentication \"password\" is supported for logins."
+    }
+
+    precondition {
+      condition     = alltrue([for db, cfg in local.databases : contains(local.allowed_statuses, cfg.status)])
+      error_message = "Database status must be active or retired."
+    }
+
+    precondition {
+      condition     = alltrue([for k, s in local.schemas : contains(local.allowed_statuses, s.status)])
+      error_message = "Schema status must be active or retired."
     }
 
     precondition {
@@ -151,9 +177,17 @@ resource "terraform_data" "validate_config" {
     precondition {
       condition = alltrue([
         for m in local.mappings :
-        m.schema == null ? true : contains(try(local.databases[m.database].schemas, []), m.schema)
+        m.schema == null ? true : contains(keys(local.schemas), "${m.database}/${m.schema}")
       ])
       error_message = "A mapping references a schema that is not declared for its database."
+    }
+
+    precondition {
+      condition = alltrue([
+        for m in local.mappings :
+        m.schema == null ? true : local.schemas["${m.database}/${m.schema}"].status == "active"
+      ])
+      error_message = "A mapping references a retired schema. Remove the mapping, then run the destroy-schema workflow."
     }
 
     precondition {
