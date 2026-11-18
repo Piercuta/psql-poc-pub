@@ -1,0 +1,101 @@
+name: Terraform infra
+
+# Deploys the 01-infra stack (VPC, Aurora, CodeBuild runner).
+# This stack runs on GitHub-hosted runners, NOT on the CodeBuild runner: it
+# creates and modifies the runner and its network, and needs no access to the database.
+#   - pull request: terraform plan (read-only role)
+#   - push on main: terraform plan, then apply after manual approval (environment "dev")
+#
+# Required GitHub repository variables (Settings > Secrets and variables > Actions > Variables):
+#   AWS_PLAN_ROLE_ARN   IAM role assumed through OIDC for plans (read-only)
+#   AWS_APPLY_ROLE_ARN  IAM role assumed through OIDC for applies (environment "dev" only)
+
+on:
+  pull_request:
+    paths:
+      - "terraform/stacks/01-infra/**"
+      - "terraform/modules/**"
+      - ".github/workflows/terraform-infra.yml"
+  push:
+    branches: [main]
+    paths:
+      - "terraform/stacks/01-infra/**"
+      - "terraform/modules/**"
+      - ".github/workflows/terraform-infra.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # required to request the OIDC token
+
+concurrency:
+  group: terraform-infra-dev
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: eu-west-1
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  TF_WORKDIR: terraform/stacks/01-infra
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.14"
+          terraform_wrapper: false
+
+      - name: Format check
+        run: terraform fmt -check -recursive
+        working-directory: terraform
+
+      - name: Init
+        run: terraform init
+        working-directory: ${{ env.TF_WORKDIR }}
+
+      - name: Validate
+        run: terraform validate
+        working-directory: ${{ env.TF_WORKDIR }}
+
+      # -lock=false: the plan role is read-only and cannot write the S3 lock file.
+      - name: Plan
+        run: terraform plan -lock=false
+        working-directory: ${{ env.TF_WORKDIR }}
+
+  apply:
+    name: Apply
+    needs: plan
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    # Configure required reviewers on the "dev" environment in GitHub settings.
+    environment: dev
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.14"
+          terraform_wrapper: false
+
+      - name: Init
+        run: terraform init
+        working-directory: ${{ env.TF_WORKDIR }}
+
+      - name: Apply
+        run: terraform apply -auto-approve -lock-timeout=5m
+        working-directory: ${{ env.TF_WORKDIR }}

@@ -1,27 +1,17 @@
-# Stack outputs of 01-infra (VPC, subnets, Aurora secret...).
-data "terraform_remote_state" "infra" {
-  backend = "s3"
-
-  config = {
-    bucket = var.state_bucket
-    key    = "${var.state_key_prefix}/${var.environment}/terraform.tfstate"
-    region = var.region
-  }
-}
+# CodeBuild runner used by GitHub Actions to run Terraform inside the VPC
+# (the 02-db-config stack needs network access to the isolated Aurora cluster).
 
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
 locals {
-  name   = "psql-poc-${var.environment}-runner"
-  infra  = data.terraform_remote_state.infra.outputs
-  region = var.region
-  acct   = data.aws_caller_identity.current.account_id
-  part   = data.aws_partition.current.partition
+  runner_name = "${local.name}-runner"
+  acct        = data.aws_caller_identity.current.account_id
+  part        = data.aws_partition.current.partition
 
   private_subnet_arns = [
-    for id in local.infra.private_subnet_ids :
-    "arn:${local.part}:ec2:${local.region}:${local.acct}:subnet/${id}"
+    for id in module.network.private_subnet_ids :
+    "arn:${local.part}:ec2:${var.region}:${local.acct}:subnet/${id}"
   ]
 }
 
@@ -41,12 +31,12 @@ resource "aws_codebuild_source_credential" "github" {
 # registry, AWS APIs through the NAT Gateway, Aurora inside the VPC).
 # ---------------------------------------------------------------------------
 resource "aws_security_group" "runner" {
-  name        = local.name
+  name        = local.runner_name
   description = "CodeBuild GitHub Actions runner (no inbound)"
-  vpc_id      = local.infra.vpc_id
+  vpc_id      = module.network.vpc_id
 
   tags = {
-    Name = local.name
+    Name = local.runner_name
   }
 }
 
@@ -60,7 +50,7 @@ resource "aws_vpc_security_group_egress_rule" "runner_all" {
 # ---------------------------------------------------------------------------
 # IAM role of the runner. It is the identity used by Terraform in the workflow.
 # ---------------------------------------------------------------------------
-data "aws_iam_policy_document" "assume_role" {
+data "aws_iam_policy_document" "runner_assume_role" {
   statement {
     actions = ["sts:AssumeRole"]
 
@@ -78,12 +68,12 @@ data "aws_iam_policy_document" "assume_role" {
 }
 
 resource "aws_iam_role" "runner" {
-  name               = local.name
-  assume_role_policy = data.aws_iam_policy_document.assume_role.json
+  name               = local.runner_name
+  assume_role_policy = data.aws_iam_policy_document.runner_assume_role.json
 }
 
 resource "aws_cloudwatch_log_group" "runner" {
-  name              = "/aws/codebuild/${local.name}"
+  name              = "/aws/codebuild/${local.runner_name}"
   retention_in_days = var.log_retention_days
 }
 
@@ -116,7 +106,7 @@ data "aws_iam_policy_document" "runner" {
   statement {
     sid       = "VpcNetworkInterfacePermission"
     actions   = ["ec2:CreateNetworkInterfacePermission"]
-    resources = ["arn:${local.part}:ec2:${local.region}:${local.acct}:network-interface/*"]
+    resources = ["arn:${local.part}:ec2:${var.region}:${local.acct}:network-interface/*"]
 
     condition {
       test     = "StringEquals"
@@ -165,10 +155,10 @@ data "aws_iam_policy_document" "runner" {
   statement {
     sid       = "ReadMasterSecret"
     actions   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
-    resources = [local.infra.master_user_secret_arn]
+    resources = [module.aurora.master_user_secret_arn]
   }
 
-  # Application credentials created by the 03-db-config stack
+  # Application credentials created by the 02-db-config stack
   statement {
     sid = "ManageAppSecrets"
     actions = [
@@ -183,7 +173,7 @@ data "aws_iam_policy_document" "runner" {
       "secretsmanager:UntagResource",
     ]
     resources = [
-      "arn:${local.part}:secretsmanager:${local.region}:${local.acct}:secret:${var.state_key_prefix}/${var.environment}/*"
+      "arn:${local.part}:secretsmanager:${var.region}:${local.acct}:secret:${var.state_key_prefix}/${var.environment}/*"
     ]
   }
 }
@@ -200,7 +190,7 @@ resource "aws_iam_role_policy" "runner" {
 #   runs-on: codebuild-<project name>-${{ github.run_id }}-${{ github.run_attempt }}
 # ---------------------------------------------------------------------------
 resource "aws_codebuild_project" "runner" {
-  name          = local.name
+  name          = local.runner_name
   description   = "GitHub Actions runner inside the VPC (Terraform + PostgreSQL provider)"
   service_role  = aws_iam_role.runner.arn
   build_timeout = 30
@@ -222,8 +212,8 @@ resource "aws_codebuild_project" "runner" {
   }
 
   vpc_config {
-    vpc_id             = local.infra.vpc_id
-    subnets            = local.infra.private_subnet_ids
+    vpc_id             = module.network.vpc_id
+    subnets            = module.network.private_subnet_ids
     security_group_ids = [aws_security_group.runner.id]
   }
 

@@ -8,12 +8,12 @@ name: Terraform db-config
 on:
   pull_request:
     paths:
-      - "terraform/stacks/03-db-config/**"
+      - "terraform/stacks/02-db-config/**"
       - ".github/workflows/terraform-db-config.yml"
   push:
     branches: [main]
     paths:
-      - "terraform/stacks/03-db-config/**"
+      - "terraform/stacks/02-db-config/**"
       - ".github/workflows/terraform-db-config.yml"
   workflow_dispatch:
 
@@ -28,7 +28,7 @@ env:
   AWS_REGION: eu-west-1
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
-  TF_WORKDIR: terraform/stacks/03-db-config
+  TF_WORKDIR: terraform/stacks/02-db-config
 
 jobs:
   plan:
