@@ -24,8 +24,6 @@ configuration:
     analytics:
       status: active
       schemas:
-        - name: raw
-          status: retired # example: waiting for destroy-schema workflow
         - name: staging
           status: active # cleaned and joined data
         - name: reporting
