@@ -16,7 +16,6 @@ configuration:
     # Data platform: ingestion, transformation and BI reporting
     analytics:
       schemas:
-        - raw # data loaded as-is from the sources
         - staging # cleaned and joined data
         - reporting # tables and views consumed by BI dashboards
       extensions:
