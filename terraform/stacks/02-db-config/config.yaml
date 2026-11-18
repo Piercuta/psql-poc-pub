@@ -51,7 +51,6 @@ configuration:
 
     # ETL: extracts from the shop, loads raw and staging
     - { level: reader, username: etl_worker, database: shop }
-    - { level: writer, username: etl_worker, database: analytics, schema: raw }
     - { level: writer, username: etl_worker, database: analytics, schema: staging }
 
     # BI dashboards: read-only on the reporting layer
