@@ -62,3 +62,13 @@ output "runner_security_group_id" {
   description = "ID of the runner security group."
   value       = aws_security_group.runner.id
 }
+
+output "db_archives_bucket" {
+  description = "S3 bucket for pg_dump archives taken before destroy."
+  value       = aws_s3_bucket.db_archives.bucket
+}
+
+output "db_archives_bucket_arn" {
+  description = "ARN of the S3 archives bucket."
+  value       = aws_s3_bucket.db_archives.arn
+}

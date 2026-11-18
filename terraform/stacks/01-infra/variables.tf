@@ -81,3 +81,9 @@ variable "log_retention_days" {
   type        = number
   default     = 14
 }
+
+variable "archive_retention_days" {
+  description = "How long schema/database dump archives are kept in S3 before expiration."
+  type        = number
+  default     = 90
+}

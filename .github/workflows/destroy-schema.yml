@@ -1,0 +1,203 @@
+name: Destroy schema
+
+# Production-style path to drop a *retired* schema:
+#   1. Verify status=retired in config.yaml
+#   2. pg_dump archive → S3 (refuse to continue if dump fails)
+#   3. DROP SCHEMA ... CASCADE via psql
+#   4. terraform state rm (prevent_destroy stays true forever in Terraform)
+#   5. Strip the schema from config.yaml and open a sync PR
+#
+# Prerequisites:
+#   - GitHub environment "destroy" with required reviewers (stricter than "dev")
+#   - 01-infra applied (archives bucket + runner IAM)
+#   - Schema already retired on the normal db-config pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      database:
+        description: Database name (e.g. analytics)
+        required: true
+        type: string
+      schema:
+        description: Schema name to destroy (e.g. raw)
+        required: true
+        type: string
+      confirm:
+        description: Type the schema name again to confirm irreversible destroy
+        required: true
+        type: string
+      ticket:
+        description: Change / ticket ID for the audit metadata
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: destroy-schema-${{ github.event.inputs.database }}-${{ github.event.inputs.schema }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: eu-west-1
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  TF_WORKDIR: terraform/stacks/02-db-config
+  CONFIG_PATH: terraform/stacks/02-db-config/config.yaml
+
+jobs:
+  validate:
+    name: Validate retired
+    runs-on:
+      - codebuild-psql-poc-dev-runner-${{ github.run_id }}-${{ github.run_attempt }}
+      - validate
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PyYAML
+        run: pip3 install --user pyyaml
+
+      - name: Check schema is retired
+        run: |
+          python3 scripts/prepare_schema_destroy.py \
+            --config "${CONFIG_PATH}" \
+            --database "${{ inputs.database }}" \
+            --schema "${{ inputs.schema }}" \
+            --confirm "${{ inputs.confirm }}" \
+            --check-only
+
+  archive-and-drop:
+    name: Archive and drop
+    needs: validate
+    environment: destroy
+    runs-on:
+      - codebuild-psql-poc-dev-runner-${{ github.run_id }}-${{ github.run_attempt }}
+      - destroy
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          set -euo pipefail
+          if ! command -v pg_dump >/dev/null 2>&1 || ! command -v psql >/dev/null 2>&1; then
+            sudo dnf install -y postgresql15 || sudo yum install -y postgresql15 || sudo yum install -y postgresql
+          fi
+          pip3 install --user pyyaml
+          pg_dump --version
+          psql --version
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.14"
+          terraform_wrapper: false
+
+      - name: Resolve infra outputs
+        id: infra
+        working-directory: ${{ env.TF_WORKDIR }}
+        run: |
+          set -euo pipefail
+          terraform init -input=false
+          tf_out() { echo "$1" | terraform console | tr -d '"'; }
+          echo "host=$(tf_out 'data.terraform_remote_state.infra.outputs.cluster_endpoint')" >> "${GITHUB_OUTPUT}"
+          echo "port=$(tf_out 'data.terraform_remote_state.infra.outputs.cluster_port')" >> "${GITHUB_OUTPUT}"
+          echo "secret_arn=$(tf_out 'data.terraform_remote_state.infra.outputs.master_user_secret_arn')" >> "${GITHUB_OUTPUT}"
+          echo "bucket=$(tf_out 'data.terraform_remote_state.infra.outputs.db_archives_bucket')" >> "${GITHUB_OUTPUT}"
+
+      - name: Load master credentials
+        id: creds
+        env:
+          SECRET_ARN: ${{ steps.infra.outputs.secret_arn }}
+        run: |
+          set -euo pipefail
+          secret_json=$(aws secretsmanager get-secret-value --secret-id "${SECRET_ARN}" --query SecretString --output text)
+          echo "username=$(SECRET_JSON="${secret_json}" python3 -c 'import json,os; print(json.loads(os.environ["SECRET_JSON"])["username"])')" >> "${GITHUB_OUTPUT}"
+          # Password is written to a file so it does not appear in GITHUB_OUTPUT logs.
+          SECRET_JSON="${secret_json}" python3 -c 'import json,os; open("/tmp/pgpass","w").write(json.loads(os.environ["SECRET_JSON"])["password"])'
+          chmod 600 /tmp/pgpass
+
+      - name: Archive schema to S3
+        id: archive
+        env:
+          PGPASSWORD_FILE: /tmp/pgpass
+        run: |
+          set -euo pipefail
+          export PGPASSWORD
+          PGPASSWORD=$(cat /tmp/pgpass)
+          python3 scripts/archive_schema.py \
+            --host "${{ steps.infra.outputs.host }}" \
+            --port "${{ steps.infra.outputs.port }}" \
+            --database "${{ inputs.database }}" \
+            --schema "${{ inputs.schema }}" \
+            --username "${{ steps.creds.outputs.username }}" \
+            --password "${PGPASSWORD}" \
+            --bucket "${{ steps.infra.outputs.bucket }}" \
+            --environment "dev" \
+            --ticket "${{ inputs.ticket }}" \
+            --actor "${{ github.actor }}" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: DROP SCHEMA
+        env:
+          PGPASSWORD_FILE: /tmp/pgpass
+        run: |
+          set -euo pipefail
+          export PGPASSWORD
+          PGPASSWORD=$(cat /tmp/pgpass)
+          python3 scripts/drop_schema.py \
+            --host "${{ steps.infra.outputs.host }}" \
+            --port "${{ steps.infra.outputs.port }}" \
+            --database "${{ inputs.database }}" \
+            --schema "${{ inputs.schema }}" \
+            --username "${{ steps.creds.outputs.username }}"
+
+      - name: Remove from Terraform state
+        working-directory: ${{ env.TF_WORKDIR }}
+        run: |
+          set -euo pipefail
+          addr='postgresql_schema.schema["${{ inputs.database }}/${{ inputs.schema }}"]'
+          terraform state rm "${addr}"
+
+      - name: Strip schema from config.yaml
+        run: |
+          python3 scripts/prepare_schema_destroy.py \
+            --config "${CONFIG_PATH}" \
+            --database "${{ inputs.database }}" \
+            --schema "${{ inputs.schema }}" \
+            --confirm "${{ inputs.confirm }}"
+
+      - name: Open PR to sync config.yaml
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          branch="destroy/${{ inputs.database }}-${{ inputs.schema }}-${{ github.run_id }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "${branch}"
+          git add "${CONFIG_PATH}"
+          if git diff --staged --quiet; then
+            echo "No YAML change to commit (unexpected)."
+            exit 1
+          fi
+          git commit -m "chore(db): remove destroyed schema ${{ inputs.database }}/${{ inputs.schema }}"
+          git push -u origin "${branch}"
+          gh pr create \
+            --title "chore(db): remove destroyed schema ${{ inputs.database }}/${{ inputs.schema }}" \
+            --body "$(cat <<EOF
+          ## Summary
+          - Schema \`${{ inputs.database }}/${{ inputs.schema }}\` was archived and dropped by [destroy run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
+          - Archive: \`${{ steps.archive.outputs.archive_uri }}\`
+          - Ticket: ${{ inputs.ticket }}
+
+          ## Important
+          Merge this PR **immediately**. Until it is merged, \`main\` still lists the schema as \`retired\` and a normal apply could recreate an empty schema.
+
+          EOF
+          )"
+
+      - name: Redact password file
+        if: always()
+        run: rm -f /tmp/pgpass

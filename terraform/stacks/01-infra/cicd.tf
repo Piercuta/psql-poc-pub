@@ -176,6 +176,25 @@ data "aws_iam_policy_document" "runner" {
       "arn:${local.part}:secretsmanager:${var.region}:${local.acct}:secret:${var.state_key_prefix}/${var.environment}/*"
     ]
   }
+
+  # Schema/database dump archives (destroy-schema workflow)
+  statement {
+    sid       = "ArchiveBucketList"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.db_archives.arn]
+
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["archives/*"]
+    }
+  }
+
+  statement {
+    sid       = "ArchiveObjects"
+    actions   = ["s3:GetObject", "s3:PutObject"]
+    resources = ["${aws_s3_bucket.db_archives.arn}/archives/*"]
+  }
 }
 
 resource "aws_iam_role_policy" "runner" {

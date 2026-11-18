@@ -78,7 +78,8 @@ resource "postgresql_database" "db" {
 
   name = each.key
 
-  # Removing a database from config.yaml must not silently drop its data.
+  # Always on: the normal pipeline cannot drop databases.
+  # Real destroys go through the destroy-schema workflow (archive → SQL → state rm).
   lifecycle {
     prevent_destroy = true
   }
@@ -94,7 +95,8 @@ resource "postgresql_schema" "schema" {
   owner         = local.schema_owner[each.key] != null ? postgresql_role.login[local.schema_owner[each.key]].name : null
   if_not_exists = true
 
-  # Removing a schema from config.yaml must not silently drop its tables/data.
+  # Always on: the normal pipeline cannot drop schemas.
+  # Real destroys go through the destroy-schema workflow (archive → SQL → state rm).
   lifecycle {
     prevent_destroy = true
   }
