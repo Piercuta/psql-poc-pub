@@ -82,12 +82,29 @@ jobs:
       - name: Install tools
         run: |
           set -euo pipefail
-          if ! command -v pg_dump >/dev/null 2>&1 || ! command -v psql >/dev/null 2>&1; then
-            sudo dnf install -y postgresql15 || sudo yum install -y postgresql15 || sudo yum install -y postgresql
+          # Client major version must be >= Aurora engine (17.x). pg_dump 15 refuses 17 servers.
+          if ! sudo dnf install -y postgresql17; then
+            sudo dnf install -y https://download.postgresql.org/pub/repos/yum/reporpms/AL-2023-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+            sudo dnf -qy module disable postgresql || true
+            sudo dnf install -y postgresql17
           fi
+          # Prefer explicit 17 binaries over an older postgresql15 already on PATH.
+          for d in /usr/pgsql-17/bin /usr/lib64/pgsql17/bin; do
+            if [ -x "${d}/pg_dump" ]; then
+              echo "${d}" >> "${GITHUB_PATH}"
+              export PATH="${d}:${PATH}"
+              break
+            fi
+          done
           pip3 install --user pyyaml
           pg_dump --version
           psql --version
+          major=$(pg_dump --version | sed -n 's/.* \([0-9]\+\)\..*/\1/p')
+          if [ "${major:-0}" -lt 17 ]; then
+            echo "pg_dump major ${major} is too old for Aurora 17" >&2
+            type -a pg_dump || true
+            exit 1
+          fi
 
       - uses: hashicorp/setup-terraform@v3
         with:
