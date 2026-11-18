@@ -8,10 +8,11 @@ CodeBuild-hosted GitHub Actions runner.
 | Stack | State key | Purpose |
 |-------|-----------|---------|
 | `terraform/stacks/01-infra` | `psql-poc/dev/terraform.tfstate` | VPC, Aurora, CodeBuild runner, S3 dump archives |
-| `terraform/stacks/02-db-config` | `psql-poc/dev/db-config.tfstate` | PostgreSQL content from `config.yaml` |
+| `terraform/stacks/02-db-config` | `psql-poc/dev/db-config.tfstate` | PostgreSQL content from root `config.yaml` |
 
-Modules live in `terraform/modules`. In a production split, the app repo would keep only
-`config.yaml`; this stack would be consumed as a versioned module from a platform repo.
+Modules live in `terraform/modules`. App-facing desired state lives at repo-root
+`config.yaml` (the only file an app team would own in a production split); the stack
+would then be consumed as a versioned module from a platform repo.
 
 ## Deployment order
 

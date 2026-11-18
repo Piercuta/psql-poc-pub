@@ -8,12 +8,14 @@ name: Terraform db-config
 on:
   pull_request:
     paths:
+      - "config.yaml"
       - "terraform/stacks/02-db-config/**"
       - ".github/workflows/terraform-db-config.yml"
       - ".github/actions/**"
   push:
     branches: [main]
     paths:
+      - "config.yaml"
       - "terraform/stacks/02-db-config/**"
       - ".github/workflows/terraform-db-config.yml"
       - ".github/actions/**"

@@ -1,8 +1,9 @@
-# Reads config.yaml and turns it into flat maps usable with for_each.
+# Reads repo-root config.yaml (app-facing contract) into flat maps for for_each.
 # This file only contains locals and the configuration checks (no PostgreSQL access).
 
 locals {
-  config = yamldecode(file("${path.module}/config.yaml")).configuration
+  # In production the app repo keeps only this YAML; the stack lives in a platform module.
+  config = yamldecode(file("${path.module}/../../../config.yaml")).configuration
 
   allowed_statuses = toset(["active", "retired"])
 

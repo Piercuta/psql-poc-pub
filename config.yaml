@@ -1,6 +1,8 @@
-# Desired content of the PostgreSQL server, applied by Terraform (02-db-config stack).
+# Desired content of the PostgreSQL server (app-facing contract at repo root).
+# In production this is typically the only file the app team can change.
+# Applied by Terraform stack 02-db-config.
 #
-# Schema / database lifecycle (app repo owns only this file in production):
+# Schema / database lifecycle:
 #   status: active  — managed (grants, ownership)
 #   status: retired — kept in the cluster, grants removed, prevent_destroy still on
 # Destroying a retired object is done only by the destroy-schema workflow

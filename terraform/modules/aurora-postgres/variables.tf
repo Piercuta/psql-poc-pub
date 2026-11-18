@@ -38,7 +38,7 @@ variable "master_username" {
 variable "min_capacity" {
   description = "Minimum Serverless v2 capacity in ACUs (0 enables auto-pause)."
   type        = number
-  default     = 0.5
+  default     = 0
 }
 
 variable "max_capacity" {

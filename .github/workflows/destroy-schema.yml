@@ -46,7 +46,7 @@ env:
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
   TF_WORKDIR: terraform/stacks/02-db-config
-  CONFIG_PATH: terraform/stacks/02-db-config/config.yaml
+  CONFIG_PATH: config.yaml
 
 jobs:
   validate:
