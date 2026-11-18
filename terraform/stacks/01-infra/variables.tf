@@ -43,7 +43,7 @@ variable "min_capacity" {
 variable "max_capacity" {
   description = "Maximum Serverless v2 capacity in ACUs."
   type        = number
-  default     = 2
+  default     = 3
 }
 
 variable "github_repository" {
