@@ -3,7 +3,8 @@ output "databases" {
   value = {
     for db, cfg in local.databases : db => {
       schemas = {
-        for s in cfg.schemas : s => coalesce(local.schema_owner["${db}/${s}"], local.master.username)
+        # The master username is sensitive (read from Secrets Manager): do not expose it.
+        for s in cfg.schemas : s => coalesce(local.schema_owner["${db}/${s}"], "(master user)")
       }
       extensions = cfg.extensions
     }

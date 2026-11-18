@@ -1,0 +1,69 @@
+name: Terraform apply with summary
+description: >
+  Runs terraform apply and writes a readable report in the job summary
+  (headline counters, resources changed, outputs, full log in a collapsed block).
+  Terraform must already be installed and initialized.
+
+inputs:
+  working-directory:
+    description: Directory of the Terraform stack.
+    required: true
+  title:
+    description: Title shown in the report (usually the stack name).
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Terraform apply
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        TITLE: ${{ inputs.title }}
+      run: |
+        # A saved plan is not used on purpose: it would contain the generated
+        # passwords and have to travel through an artifact.
+        set +e
+        terraform apply -input=false -no-color -auto-approve -lock-timeout=5m 2>&1 | tee apply.txt
+        code=${PIPESTATUS[0]}
+        set -e
+
+        {
+          echo "## Terraform apply: ${TITLE}"
+          echo
+          if [ "${code}" -ne 0 ]; then
+            echo "**Apply failed.** Last lines of the log:"
+            echo
+            echo '```'
+            tail -n 60 apply.txt
+            echo '```'
+          else
+            echo "**$(grep -E '^Apply complete!' apply.txt | tail -1)**"
+            echo
+            rows=$(grep -E ': (Creation|Modifications|Destruction|Import) complete' apply.txt \
+              | awk -F': ' '{ r=$1; a=$2; sub(/ complete.*/, "", a); gsub(/\|/, "\\|", r); printf "| %s | `%s` |\n", a, r }' || true)
+            if [ -n "${rows}" ]; then
+              echo "| Action | Resource |"
+              echo "|---|---|"
+              echo "${rows}"
+              echo
+            fi
+            echo "### Outputs"
+            echo
+            echo '```'
+            terraform output -no-color 2>&1 || true
+            echo '```'
+            echo
+            echo "<details><summary>Full apply log</summary>"
+            echo
+            echo '```'
+            head -c 500000 apply.txt
+            echo
+            echo '```'
+            echo "</details>"
+          fi
+        } >> "${GITHUB_STEP_SUMMARY}"
+
+        if [ "${code}" -ne 0 ]; then
+          exit "${code}"
+        fi

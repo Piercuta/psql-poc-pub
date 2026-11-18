@@ -16,12 +16,14 @@ on:
       - "terraform/stacks/01-infra/**"
       - "terraform/modules/**"
       - ".github/workflows/terraform-infra.yml"
+      - ".github/actions/**"
   push:
     branches: [main]
     paths:
       - "terraform/stacks/01-infra/**"
       - "terraform/modules/**"
       - ".github/workflows/terraform-infra.yml"
+      - ".github/actions/**"
   workflow_dispatch:
 
 permissions:
@@ -69,8 +71,11 @@ jobs:
 
       # -lock=false: the plan role is read-only and cannot write the S3 lock file.
       - name: Plan
-        run: terraform plan -lock=false
-        working-directory: ${{ env.TF_WORKDIR }}
+        uses: ./.github/actions/terraform-plan
+        with:
+          working-directory: ${{ env.TF_WORKDIR }}
+          title: 01-infra
+          plan-args: -lock=false
 
   apply:
     name: Apply
@@ -97,5 +102,7 @@ jobs:
         working-directory: ${{ env.TF_WORKDIR }}
 
       - name: Apply
-        run: terraform apply -auto-approve -lock-timeout=5m
-        working-directory: ${{ env.TF_WORKDIR }}
+        uses: ./.github/actions/terraform-apply
+        with:
+          working-directory: ${{ env.TF_WORKDIR }}
+          title: 01-infra

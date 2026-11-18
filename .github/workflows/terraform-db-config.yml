@@ -10,11 +10,13 @@ on:
     paths:
       - "terraform/stacks/02-db-config/**"
       - ".github/workflows/terraform-db-config.yml"
+      - ".github/actions/**"
   push:
     branches: [main]
     paths:
       - "terraform/stacks/02-db-config/**"
       - ".github/workflows/terraform-db-config.yml"
+      - ".github/actions/**"
   workflow_dispatch:
 
 permissions:
@@ -57,8 +59,11 @@ jobs:
         working-directory: ${{ env.TF_WORKDIR }}
 
       - name: Plan
-        run: terraform plan -lock-timeout=5m
-        working-directory: ${{ env.TF_WORKDIR }}
+        uses: ./.github/actions/terraform-plan
+        with:
+          working-directory: ${{ env.TF_WORKDIR }}
+          title: 02-db-config
+          plan-args: -lock-timeout=5m
 
   apply:
     name: Apply
@@ -81,8 +86,8 @@ jobs:
         run: terraform init
         working-directory: ${{ env.TF_WORKDIR }}
 
-      # A saved plan is not used on purpose: it would contain the generated
-      # passwords and have to travel through an artifact.
       - name: Apply
-        run: terraform apply -auto-approve -lock-timeout=5m
-        working-directory: ${{ env.TF_WORKDIR }}
+        uses: ./.github/actions/terraform-apply
+        with:
+          working-directory: ${{ env.TF_WORKDIR }}
+          title: 02-db-config

@@ -93,7 +93,7 @@ locals {
   ])
 
   access_grouped = {
-    for e in local.expanded_mappings : "${e.username}|${e.database}|${e.schema}" => e...
+    for e in local.expanded_mappings : "${e.username}/${e.database}/${e.schema}" => e...
   }
 
   # When several mappings target the same login and schema, the highest level wins.
@@ -117,9 +117,9 @@ locals {
 
   # Every (login, database) pair that needs CONNECT.
   connect_grants = {
-    for pair in distinct([for a in values(local.access) : "${a.username}|${a.database}"]) : pair => {
-      username = split("|", pair)[0]
-      database = split("|", pair)[1]
+    for pair in distinct([for a in values(local.access) : "${a.username}/${a.database}"]) : pair => {
+      username = split("/", pair)[0]
+      database = split("/", pair)[1]
     }
   }
 }

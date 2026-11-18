@@ -1,0 +1,79 @@
+name: Terraform plan with summary
+description: >
+  Runs terraform plan and writes a readable report in the job summary
+  (headline counters, table of changed resources, full plan in a collapsed block).
+  Terraform must already be installed and initialized.
+
+inputs:
+  working-directory:
+    description: Directory of the Terraform stack.
+    required: true
+  title:
+    description: Title shown in the report (usually the stack name).
+    required: true
+  plan-args:
+    description: Extra arguments passed to terraform plan.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Install tf-summarize
+      shell: bash
+      run: |
+        set -euo pipefail
+        version="v0.3.20"
+        sha256="6ab68aad6200586ee983e8112b67aa2050c61dc6e67182dbb287b30c7a97c9a8"
+        dir="${RUNNER_TEMP}/tf-summarize"
+        mkdir -p "${dir}"
+        cd "${dir}"
+        curl -fsSL -o tf-summarize.tgz \
+          "https://github.com/dineshba/tf-summarize/releases/download/${version}/tf-summarize_linux_amd64.tar.gz"
+        echo "${sha256}  tf-summarize.tgz" | sha256sum -c -
+        tar xzf tf-summarize.tgz tf-summarize
+        echo "${dir}" >> "${GITHUB_PATH}"
+
+    - name: Terraform plan
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        TITLE: ${{ inputs.title }}
+        PLAN_ARGS: ${{ inputs.plan-args }}
+      run: |
+        set +e
+        # shellcheck disable=SC2086
+        terraform plan -input=false -no-color -detailed-exitcode -out=tfplan ${PLAN_ARGS} 2>&1 | tee plan.txt
+        code=${PIPESTATUS[0]}
+        set -e
+
+        # Exit codes with -detailed-exitcode: 0 = no changes, 1 = error, 2 = changes.
+        {
+          echo "## Terraform plan: ${TITLE}"
+          echo
+          if [ "${code}" -eq 1 ]; then
+            echo "**Plan failed.** Last lines of the log:"
+            echo
+            echo '```'
+            tail -n 60 plan.txt
+            echo '```'
+          else
+            echo "**$(grep -E '^(Plan:|No changes\.)' plan.txt | tail -1)**"
+            echo
+            if [ "${code}" -eq 2 ]; then
+              terraform show -json tfplan | tf-summarize -md || echo "_Change table unavailable._"
+              echo
+            fi
+            echo "<details><summary>Full plan</summary>"
+            echo
+            echo '```'
+            head -c 500000 plan.txt
+            echo
+            echo '```'
+            echo "</details>"
+          fi
+        } >> "${GITHUB_STEP_SUMMARY}"
+
+        if [ "${code}" -eq 1 ]; then
+          exit 1
+        fi
