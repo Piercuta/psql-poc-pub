@@ -94,6 +94,11 @@ resource "postgresql_schema" "schema" {
   owner         = local.schema_owner[each.key] != null ? postgresql_role.login[local.schema_owner[each.key]].name : null
   if_not_exists = true
 
+  # Removing a schema from config.yaml must not silently drop its tables/data.
+  lifecycle {
+    prevent_destroy = true
+  }
+
   depends_on = [postgresql_grant_role.master_membership]
 }
 
