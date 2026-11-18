@@ -201,9 +201,7 @@ jobs:
           fi
           git commit -m "chore(db): remove destroyed schema ${{ inputs.database }}/${{ inputs.schema }}"
           git push -u origin "${branch}"
-          gh pr create \
-            --title "chore(db): remove destroyed schema ${{ inputs.database }}/${{ inputs.schema }}" \
-            --body "$(cat <<EOF
+          pr_body="$(cat <<EOF
           ## Summary
           - Schema \`${{ inputs.database }}/${{ inputs.schema }}\` was archived and dropped by [destroy run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
           - Archive: \`${{ steps.archive.outputs.archive_uri }}\`
@@ -214,6 +212,14 @@ jobs:
 
           EOF
           )"
+          # PR creation must not fail the destroy: archive/DROP/state rm already succeeded.
+          # Needs repo setting "Allow GitHub Actions to create and approve pull requests", else open manually.
+          if ! gh pr create \
+            --title "chore(db): remove destroyed schema ${{ inputs.database }}/${{ inputs.schema }}" \
+            --body "${pr_body}"; then
+            echo "::warning::gh pr create failed (often: Actions not allowed to create PRs). Open manually:"
+            echo "${{ github.server_url }}/${{ github.repository }}/compare/${branch}?expand=1"
+          fi
 
       - name: Redact password file
         if: always()
