@@ -37,7 +37,7 @@ variable "engine_version" {
 variable "min_capacity" {
   description = "Minimum Serverless v2 capacity in ACUs."
   type        = number
-  default     = 0.5
+  default     = 0
 }
 
 variable "max_capacity" {
