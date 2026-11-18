@@ -8,7 +8,7 @@ CodeBuild-hosted GitHub Actions runner.
 | Stack | State key | Purpose |
 |-------|-----------|---------|
 | `terraform/stacks/01-infra` | `psql-poc/dev/terraform.tfstate` | VPC (isolated / private / public subnets, NAT), Aurora cluster, CodeBuild GitHub Actions runner (`cicd.tf`) |
-| `terraform/stacks/02-db-config` | `psql-poc/dev/db-config.tfstate` | PostgreSQL provider: databases, schemas, roles, credentials secrets |
+| `terraform/stacks/02-db-config` | `psql-poc/dev/db-config.tfstate` | PostgreSQL provider, driven by `config.yaml`: databases, schemas, extensions, logins (password in Secrets Manager), reader/writer/owner access |
 
 Modules live in `terraform/modules`.
 

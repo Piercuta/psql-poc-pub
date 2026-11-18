@@ -27,14 +27,3 @@ variable "state_key_prefix" {
   type        = string
   default     = "psql-poc"
 }
-
-variable "databases" {
-  description = "Databases to create. Each gets one schema and one application role owning both."
-  type = map(object({
-    schema = string
-  }))
-  default = {
-    app1 = { schema = "core" }
-    app2 = { schema = "analytics" }
-  }
-}

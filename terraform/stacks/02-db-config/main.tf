@@ -20,71 +20,157 @@ locals {
   master  = jsondecode(data.aws_secretsmanager_secret_version.master.secret_string)
 }
 
-# One application role per database, with a generated password.
-resource "random_password" "app" {
-  for_each = var.databases
+# ---------------------------------------------------------------------------
+# Logins: one PostgreSQL role per login, with a generated password stored in
+# Secrets Manager.
+# ---------------------------------------------------------------------------
+resource "random_password" "login" {
+  for_each = local.logins
 
   length  = 32
   special = false
+
+  depends_on = [terraform_data.validate_config]
 }
 
-resource "postgresql_role" "app" {
-  for_each = var.databases
+resource "postgresql_role" "login" {
+  for_each = local.logins
 
-  name        = "${each.key}_app"
-  login       = true
-  password    = random_password.app[each.key].result
-  search_path = [each.value.schema]
+  name     = each.key
+  login    = true
+  password = random_password.login[each.key].result
+}
+
+resource "aws_secretsmanager_secret" "login" {
+  for_each = local.logins
+
+  name                    = "${var.state_key_prefix}/${var.environment}/db/login/${each.key}"
+  description             = "PostgreSQL credentials of login ${each.key}"
+  recovery_window_in_days = 0 # dev: allow immediate deletion and re-creation
+}
+
+resource "aws_secretsmanager_secret_version" "login" {
+  for_each = local.logins
+
+  secret_id = aws_secretsmanager_secret.login[each.key].id
+  secret_string = jsonencode({
+    host     = local.db_host
+    port     = local.db_port
+    username = postgresql_role.login[each.key].name
+    password = random_password.login[each.key].result
+  })
 }
 
 # On RDS/Aurora the master user is not a superuser: it must be a member of a
 # role before it can create objects owned by that role.
 resource "postgresql_grant_role" "master_membership" {
-  for_each = var.databases
+  for_each = local.owner_logins
 
   role       = local.master.username
-  grant_role = postgresql_role.app[each.key].name
+  grant_role = postgresql_role.login[each.key].name
 }
 
-resource "postgresql_database" "this" {
-  for_each = var.databases
+# ---------------------------------------------------------------------------
+# Databases, schemas and extensions
+# ---------------------------------------------------------------------------
+resource "postgresql_database" "db" {
+  for_each = local.databases
 
-  name  = each.key
-  owner = postgresql_role.app[each.key].name
+  name = each.key
 
-  depends_on = [postgresql_grant_role.master_membership]
+  # Removing a database from config.yaml must not silently drop its data.
+  lifecycle {
+    prevent_destroy = true
+  }
+
+  depends_on = [terraform_data.validate_config]
 }
 
-resource "postgresql_schema" "this" {
-  for_each = var.databases
+resource "postgresql_schema" "schema" {
+  for_each = local.schemas
 
   name          = each.value.schema
-  database      = postgresql_database.this[each.key].name
-  owner         = postgresql_role.app[each.key].name
+  database      = postgresql_database.db[each.value.database].name
+  owner         = local.schema_owner[each.key] != null ? postgresql_role.login[local.schema_owner[each.key]].name : null
   if_not_exists = true
 
   depends_on = [postgresql_grant_role.master_membership]
 }
 
-# Connection details for the applications, stored in Secrets Manager.
-resource "aws_secretsmanager_secret" "app" {
-  for_each = var.databases
+resource "postgresql_extension" "extension" {
+  for_each = local.extensions
 
-  name                    = "${var.state_key_prefix}/${var.environment}/db/${each.key}"
-  description             = "Application credentials for database ${each.key}"
-  recovery_window_in_days = 0 # dev: allow immediate deletion and re-creation
+  name     = each.value.extension
+  database = postgresql_database.db[each.value.database].name
 }
 
-resource "aws_secretsmanager_secret_version" "app" {
-  for_each = var.databases
+# ---------------------------------------------------------------------------
+# Grants (readers and writers). Owners need no grant: they own their schemas.
+# ---------------------------------------------------------------------------
+resource "postgresql_grant" "database_connect" {
+  for_each = local.connect_grants
 
-  secret_id = aws_secretsmanager_secret.app[each.key].id
-  secret_string = jsonencode({
-    host     = local.db_host
-    port     = local.db_port
-    dbname   = postgresql_database.this[each.key].name
-    schema   = postgresql_schema.this[each.key].name
-    username = postgresql_role.app[each.key].name
-    password = random_password.app[each.key].result
-  })
+  database    = postgresql_database.db[each.value.database].name
+  role        = postgresql_role.login[each.value.username].name
+  object_type = "database"
+  privileges  = ["CONNECT"]
+}
+
+resource "postgresql_grant" "schema_usage" {
+  for_each = local.access_grants
+
+  database    = postgresql_database.db[each.value.database].name
+  role        = postgresql_role.login[each.value.username].name
+  schema      = postgresql_schema.schema["${each.value.database}/${each.value.schema}"].name
+  object_type = "schema"
+  privileges  = ["USAGE"]
+}
+
+# Existing tables and sequences.
+resource "postgresql_grant" "tables" {
+  for_each = local.access_grants
+
+  database    = postgresql_database.db[each.value.database].name
+  role        = postgresql_role.login[each.value.username].name
+  schema      = postgresql_schema.schema["${each.value.database}/${each.value.schema}"].name
+  object_type = "table"
+  privileges  = local.levels[each.value.level].table_privileges
+}
+
+resource "postgresql_grant" "sequences" {
+  for_each = local.access_grants
+
+  database    = postgresql_database.db[each.value.database].name
+  role        = postgresql_role.login[each.value.username].name
+  schema      = postgresql_schema.schema["${each.value.database}/${each.value.schema}"].name
+  object_type = "sequence"
+  privileges  = local.levels[each.value.level].sequence_privileges
+}
+
+# Future tables and sequences created by the schema owner (the master user when the
+# schema has no owner mapping).
+resource "postgresql_default_privileges" "tables" {
+  for_each = local.access_grants
+
+  database    = postgresql_database.db[each.value.database].name
+  role        = postgresql_role.login[each.value.username].name
+  schema      = postgresql_schema.schema["${each.value.database}/${each.value.schema}"].name
+  owner       = coalesce(local.schema_owner["${each.value.database}/${each.value.schema}"], local.master.username)
+  object_type = "table"
+  privileges  = local.levels[each.value.level].table_privileges
+
+  depends_on = [postgresql_grant_role.master_membership]
+}
+
+resource "postgresql_default_privileges" "sequences" {
+  for_each = local.access_grants
+
+  database    = postgresql_database.db[each.value.database].name
+  role        = postgresql_role.login[each.value.username].name
+  schema      = postgresql_schema.schema["${each.value.database}/${each.value.schema}"].name
+  owner       = coalesce(local.schema_owner["${each.value.database}/${each.value.schema}"], local.master.username)
+  object_type = "sequence"
+  privileges  = local.levels[each.value.level].sequence_privileges
+
+  depends_on = [postgresql_grant_role.master_membership]
 }
